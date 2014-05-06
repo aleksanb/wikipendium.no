@@ -15,59 +15,68 @@ class ArticleForm(ModelForm):
     lang = forms.ChoiceField(label='', choices=choices)
     title = forms.CharField(label='')
     content = forms.CharField(label='', widget=forms.Textarea())
-    pk = forms.IntegerField(label='', widget=forms.HiddenInput())
+    parent_id = forms.IntegerField(label='', widget=forms.HiddenInput())
+    mode = None
 
     class Meta:
         model = ArticleContent
         fields = ('lang', 'title', 'content')
 
     def __init__(self, *args, **kwargs):
-        if 'new_article' in kwargs:
-            self.new_article = kwargs.pop('new_article')
+        if 'mode' in kwargs:
+            self.mode = kwargs.pop('mode')
+        if 'article' in kwargs:
+            self.article = kwargs.pop('article')
 
         super(ArticleForm, self).__init__(*args, **kwargs)
+        self.fields['parent_id'].widget.attrs['value'] = 1
         self.fields['slug'].widget.attrs['placeholder'] = 'Course code'
-        self.fields['pk'].widget.attrs['value'] = 0
         self.fields['lang'].widget.attrs = {
             'class': "select_chosen",
             'data-placeholder': "Language"
         }
 
-        try:
-            if self.instance.article:
-                slug = self.instance.article.slug
-                self.fields['slug'].widget.attrs['value'] = slug
-                if self.instance.article.pk:
-                    self.fields['slug'].widget.attrs['readonly'] = True
-                    existing_langs = (
-                        self.instance.article.get_available_language_codes()
-                    )
-                    filtered_choices = [x
-                                        for x
-                                        in self.fields['lang'].choices
-                                        if x[0] not in existing_langs]
-                    self.fields['lang'].choices = filtered_choices
-                if self.instance.pk:
-                    self.fields['pk'].widget.attrs['value'] = self.instance.pk
-                    self.fields['lang'].widget = forms.TextInput(attrs={
-                        'readonly': True
-                    })
-        except:
-            pass
+        if self.instance.pk:
+            self.fields['parent_id'].widget.attrs['value'] = self.instance.pk
+
+        if self.mode == 'add_language':
+            self.fields['slug'].widget.attrs['value'] = self.article.slug
+            self.fields['slug'].widget.attrs['readonly'] = True
+
+            existing_langs = (
+                self.article.get_available_language_codes()
+            )
+            filtered_choices = [x for x in self.fields['lang'].choices
+                                if x[0] not in existing_langs]
+            self.fields['lang'].choices = filtered_choices
+
+        if self.mode == 'edit':
+            slug = self.instance.article.slug
+            self.fields['slug'].widget.attrs['value'] = slug
+            self.fields['slug'].widget.attrs['readonly'] = True
+
+            self.fields['lang'].widget = forms.TextInput(attrs={
+                'readonly': True
+            })
 
         self.fields['title'].widget.attrs['placeholder'] = 'Course title'
-        self.fields.keyOrder = ['pk', 'slug', 'lang', 'title', 'content']
+        self.fields.keyOrder = ['slug',
+                                'lang',
+                                'title',
+                                'content',
+                                'parent_id',
+                                ]
 
     def clean(self):
         super(ArticleForm, self)
-        if 'slug' in self.cleaned_data and 'lang' in self.cleaned_data:
+        if self.mode == 'edit':
             self.merge_contents_if_needed()
         return self.cleaned_data
 
     def clean_slug(self):
         if not match('^' + slug_regex + '$', self.cleaned_data['slug']):
             raise ValidationError('Course codes must be alphanumeric.')
-        if self.new_article:
+        if self.mode == 'new_article':
             try:
                 Article.objects.get(slug=self.cleaned_data['slug'].upper())
                 raise ValidationError("This course code is already in use.")
@@ -76,7 +85,7 @@ class ArticleForm(ModelForm):
         return self.cleaned_data['slug']
 
     def merge_contents_if_needed(self):
-        parentId = self.cleaned_data['pk']
+        parent_id = self.cleaned_data['parent_id']
         article = None
         articleContent = None
         slug = self.cleaned_data['slug']
@@ -85,29 +94,32 @@ class ArticleForm(ModelForm):
             article = Article.objects.get(slug=slug)
         except:
             article = Article(slug=slug)
-        try:
-            articleContent = article.get_newest_content(lang)
-        except:
+
+        articleContent = article.get_newest_content(lang)
+        if articleContent is None:
             articleContent = ArticleContent(article=article, lang=lang)
 
-        if parentId and parentId != articleContent.pk:
-            parent = ArticleContent.objects.get(id=parentId)
+        print "parent_id", parent_id
+        print "newest ac", articleContent.pk
+        if parent_id and parent_id != articleContent.pk:
+            parent = ArticleContent.objects.get(id=parent_id)
             a = parent
             b = articleContent
             ancestors = set()
             commonAncestor = None
             while True:
-                if a.pk in ancestors:
+                print "while"
+                if a and a.pk in ancestors:
                     commonAncestor = a
                     break
-                if b.pk in ancestors:
+                if b and b.pk in ancestors:
                     commonAncestor = b
                     break
                 ancestors.add(a.pk)
                 ancestors.add(b.pk)
                 a = a.parent
                 b = b.parent
-                if a.parent is None and b.parent is None:
+                if a and a.parent is None and b and b.parent is None:
                     break
 
             try:
@@ -115,6 +127,7 @@ class ArticleForm(ModelForm):
                                commonAncestor.content, articleContent.content)
                 self.cleaned_data['content'] = merged
             except MergeError as e:
-                raise ValidationError("Merge conflict", params=e.diff)
+                raise ValidationError("Merge conflict.",
+                                      params={'diff': e.diff})
 
         return True

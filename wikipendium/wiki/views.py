@@ -1,4 +1,4 @@
-from django.shortcuts import render
+from django.shortcuts import render, get_object_or_404
 from django.http import HttpResponseRedirect, Http404
 from django.contrib.auth.decorators import login_required
 from wikipendium.wiki.models import Article, ArticleContent
@@ -101,51 +101,74 @@ def missing_language(request, article, lang="en"):
 
 @login_required
 def new(request):
-    slug = ''
     if request.POST:
-        slug = request.POST.get('slug')
-    return edit(request, slug.upper(), lang=None, new_article=True)
+        form = ArticleForm(request.POST, mode='new_article')
+        if form.is_valid():
+            slug = request.POST.get('slug')
+            article = Article(slug=slug)
+            article.save()
+
+            articleContent = form.save(commit=False)
+            articleContent.article = article
+            articleContent.edited_by = request.user
+            articleContent.save()
+            return HttpResponseRedirect(articleContent.get_absolute_url())
+    else:
+        form = ArticleForm(mode='new_article')
+
+    return render(request, 'edit.html', {
+        "mathjax": True,
+        "form": form
+    })
 
 
 @login_required
 def add_language(request, slug):
-    return edit(request, slug, None)
+    article = get_object_or_404(Article, slug=slug)
+
+    if request.method == 'POST':
+        form = ArticleForm(request.POST, mode='add_language', article=article)
+        if form.is_valid():
+            articleContent = form.save(commit=False)
+            articleContent.article = article
+            articleContent.edited_by = request.user
+            articleContent.save()
+            return HttpResponseRedirect(articleContent.get_absolute_url())
+    else:
+        form = ArticleForm(mode='add_language', article=article)
+
+    available_languages = article.get_available_languages()
+    language_list = map(lambda x: (x[0], x[1].get_edit_url),
+                        available_languages or [])
+
+    return render(request, 'edit.html', {
+        "mathjax": True,
+        "language_list": language_list,
+        "form": form
+    })
 
 
 @login_required
-def edit(request, slug, lang='en', new_article=False):
-    article = None
-    articleContent = None
-    try:
-        article = Article.objects.get(slug=slug)
-    except:
-        article = Article(slug=slug)
-
+def edit(request, slug, lang='en'):
+    article = get_object_or_404(Article, slug=slug)
     articleContent = article.get_newest_content(lang)
-    if articleContent is None:
-        articleContent = ArticleContent(article=article, lang=lang)
 
     if request.method == 'POST':
-        form = ArticleForm(request.POST, new_article=new_article)
+        new_articleContent = ArticleContent(article=article, lang=lang)
+        form = ArticleForm(request.POST,
+                           mode='edit', instance=new_articleContent)
         if form.is_valid():
-            if not article.pk:
-                article.save()
-
-            new_articleContent = form.save(commit=False)
             new_articleContent.article = article
             new_articleContent.edited_by = request.user
-            if lang is not None:
-                new_articleContent.lang = lang
-            if articleContent.pk is not None:
-                new_articleContent.lang = articleContent.lang
-                new_articleContent.parent = articleContent
+            new_articleContent.parent = articleContent
             new_articleContent.save()
-            if articleContent.pk is not None:
-                articleContent.child = new_articleContent
-                articleContent.save(change_updated_time=False)
+
+            articleContent.child = new_articleContent
+            articleContent.save(change_updated_time=False)
+
             return HttpResponseRedirect(new_articleContent.get_absolute_url())
     else:
-        form = ArticleForm(instance=articleContent)
+        form = ArticleForm(instance=articleContent, mode='edit')
 
     available_languages = article.get_available_languages(articleContent)
     language_list = map(lambda x: (x[0], x[1].get_edit_url),
